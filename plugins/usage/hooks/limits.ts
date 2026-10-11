@@ -1,17 +1,25 @@
 import type { SessionRateLimit } from 'claude-code'
 
-// Two readings of one window, from this session and others: the same window when their resets fall within a minute of
-// each other, and then the one that has used more is the later; else the window that resets later is the newer one
+const resetOf = (limit: SessionRateLimit) => Date.parse(limit.resetsAt ?? '')
+
+// Two readings of one window: the same window when their resets fall within a minute of each other
+const isSameWindow = (a: SessionRateLimit, b: SessionRateLimit) => Math.abs(resetOf(a) - resetOf(b)) < 60_000
+
+// Two readings of one kind, `b` the later to arrive: within the same window the one that has used more, else the
+// window that resets later; one without a reset tells no window, so the later to arrive stands
 const newer = (a: SessionRateLimit, b: SessionRateLimit) => {
-  const gap = Date.parse(a.resetsAt ?? '') - Date.parse(b.resetsAt ?? '')
-  if (Number.isNaN(gap) || Math.abs(gap) < 60_000) {
-    return a.percentUsed >= b.percentUsed ? a : b
+  if (Number.isNaN(resetOf(a)) || Number.isNaN(resetOf(b))) {
+    return b
+  }
+  if (isSameWindow(a, b)) {
+    return a.percentUsed > b.percentUsed ? a : b
   }
 
-  return gap > 0 ? a : b
+  return resetOf(a) > resetOf(b) ? a : b
 }
 
-// The newest reading of each window across the lists
+// The newest reading of each kind across the lists, a later list's reading standing over an earlier one's it cannot
+// tell apart
 export const mergeLimits = (...lists: (readonly SessionRateLimit[])[]) => {
   const byKind = new Map<string, SessionRateLimit>()
   for (const limit of lists.flat()) {
@@ -22,6 +30,33 @@ export const mergeLimits = (...lists: (readonly SessionRateLimit[])[]) => {
   return [...byKind.values()]
 }
 
+// The readings other sessions shared that belong to this session's account: the store is shared by every session
+// under the configuration directory, whatever account each is on, so a shared reading counts only for a window this
+// session has read itself, once that window has passed for the window after it. A session with no reading of a kind,
+// as off a subscription, draws none shared
+export const adoptLimits = (own: readonly SessionRateLimit[], shared: readonly SessionRateLimit[], now: number) =>
+  shared.filter(limit => {
+    const mine = own.find(each => each.kind === limit.kind)
+    return (
+      mine !== undefined &&
+      !Number.isNaN(resetOf(mine)) &&
+      (isSameWindow(mine, limit) || (resetOf(mine) <= now && resetOf(limit) > resetOf(mine)))
+    )
+  })
+
+// Whether every window in the list has reset by `now`, so its readings no longer count
+export const hasPassed = (limits: readonly SessionRateLimit[], now: number) => limits.every(limit => resetOf(limit) <= now)
+
+// The readings worth sharing: one without a reset tells no window, so another session cannot place it
+export const shareable = (limits: readonly SessionRateLimit[]) => limits.filter(limit => !Number.isNaN(resetOf(limit)))
+
+// The same readings spelled the same, whatever order they come in
+export const limitsKey = (limits: readonly SessionRateLimit[]) =>
+  limits
+    .map(limit => `${limit.kind}@${limit.resetsAt ?? ''}:${limit.percentUsed}`)
+    .sort()
+    .join(' ')
+
 const isLimit = (value: unknown): value is SessionRateLimit => {
   const limit = value as Partial<Record<keyof SessionRateLimit, unknown>> | null
   return (
@@ -29,7 +64,7 @@ const isLimit = (value: unknown): value is SessionRateLimit => {
     limit !== null &&
     typeof limit.kind === 'string' &&
     typeof limit.percentUsed === 'number' &&
-    (limit.resetsAt === undefined || typeof limit.resetsAt === 'string')
+    typeof limit.resetsAt === 'string'
   )
 }
 
