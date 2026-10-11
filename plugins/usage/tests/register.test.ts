@@ -77,12 +77,22 @@ const settle = async () => {
   }
 }
 
-// The store the sessions under one configuration directory share, holding what another session wrote under its key,
-// and what this one writes under its own
+// The store the sessions under one configuration directory share, holding what other sessions wrote under their keys
+// (`other` by default), and what this one writes under its own
 const sharedStore = (on: On, other?: SessionRateLimit[]) => {
-  const store = { values: new Map<string, unknown>(), writes: 0 }
+  const store = {
+    values: new Map<string, unknown>(),
+    writes: 0,
+    // what another session wrote under `key` at `at`
+    put: (key: string, limits: SessionRateLimit[], at = NOW) => store.values.set(key, { at, limits }),
+    // what this session holds under its own key
+    own: () => {
+      const held = [...store.values].find(([key]) => key.startsWith('rateLimits:') && !OTHERS.includes(key))?.[1]
+      return (held as { limits: SessionRateLimit[] } | undefined)?.limits
+    },
+  }
   if (other !== undefined) {
-    store.values.set('rateLimits:other', other)
+    store.put('rateLimits:other', other)
   }
   on('store.keys', () => ({ value: [...store.values.keys()] }))
   on('store.get', ($, e) => ({ value: store.values.get(e.key) }))
@@ -96,15 +106,13 @@ const sharedStore = (on: On, other?: SessionRateLimit[]) => {
     return { value: undefined }
   })
 
-  return {
-    ...store,
-    // what this session wrote under its own key
-    own: () => [...store.values].find(([key]) => key.startsWith('rateLimits:') && key !== 'rateLimits:other')?.[1],
-    get writes() {
-      return store.writes
-    },
-  }
+  return store
 }
+
+// The keys other sessions write under in these tests; a random one is this session's
+const OTHERS = ['rateLimits', 'rateLimits:other', 'rateLimits:closed', 'rateLimits:account', 'rateLimits:twin', 'rateLimits:broken']
+// written long enough ago for any session to remove once it adds nothing
+const LONG_AGO = NOW - 3_600_000
 
 const fiveHour = (percentUsed: number, resetsAt = '2026-10-11T12:13:00Z'): SessionRateLimit => ({ kind: 'five_hour', percentUsed, resetsAt })
 const sevenDay = (percentUsed: number, resetsAt = '2026-10-15T00:00:00Z'): SessionRateLimit => ({ kind: 'seven_day', percentUsed, resetsAt })
@@ -154,54 +162,119 @@ test('writes only when its own reading changed, and never over what another sess
   await settle()
 
   expect(store.writes).toBe(1)
-  expect(store.values.get('rateLimits:other')).toEqual([fiveHour(50), sevenDay(40)])
+  expect(store.values.get('rateLimits:other')).toEqual({ at: NOW, limits: [fiveHour(50), sevenDay(40)] })
 })
 
-test('removes the reading a session shared once all its windows have reset', async ($, on) => {
+test('ends on its last reading however quickly it measures', async ($, on) => {
   mock.clock(on, { now: NOW })
-  const store = sharedStore(on, [fiveHour(80, '2026-10-11T07:13:00Z'), sevenDay(5, '2026-10-11T09:00:00Z')])
-  engine(on, undefined)
+  const store = sharedStore(on)
+  const session = engine(on, undefined)
+  session.surfaces = ['terminal']
 
-  await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  void $.session.measure({ context: CONTEXT, rateLimits: [fiveHour(20), sevenDay(35)], changed: ['rateLimits'] })
+  void $.session.measure({ context: CONTEXT, rateLimits: [fiveHour(21), sevenDay(35)], changed: ['rateLimits'] })
+  await settle()
 
-  expect(store.values.has('rateLimits:other')).toBe(false)
+  expect(store.own()).toEqual([fiveHour(21), sevenDay(35)])
 })
 
-test('removes a reading another session shared once a newer one of the same windows covers it', async ($, on) => {
+test('removes a stale reading another session shared once all its windows have reset', async ($, on) => {
   mock.clock(on, { now: NOW })
-  const store = sharedStore(on, [fiveHour(50), sevenDay(40)])
-  store.values.set('rateLimits:closed', [fiveHour(10), sevenDay(30)])
-  store.values.set('rateLimits:account', [fiveHour(90, '2026-10-11T14:00:00Z'), sevenDay(80, '2026-10-17T00:00:00Z')])
+  const store = sharedStore(on)
+  store.put('rateLimits:closed', [fiveHour(80, '2026-10-11T07:13:00Z'), sevenDay(5, '2026-10-11T09:00:00Z')], LONG_AGO)
   engine(on, undefined)
 
   await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
 
   expect(store.values.has('rateLimits:closed')).toBe(false)
-  expect(store.values.has('rateLimits:other')).toBe(true)
-  expect(store.values.has('rateLimits:account')).toBe(true)
+})
+
+test('removes a stale reading a newer one of the same windows covers, and keeps another account', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  const store = sharedStore(on, [fiveHour(50), sevenDay(40)])
+  store.put('rateLimits:closed', [fiveHour(10), sevenDay(30)], LONG_AGO)
+  store.put('rateLimits:account', [fiveHour(90, '2026-10-11T14:00:00Z'), sevenDay(80, '2026-10-17T00:00:00Z')], LONG_AGO)
+  const session = engine(on, undefined)
+
+  await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
+
+  expect(OTHERS.filter(key => store.values.has(key))).toEqual(['rateLimits:other', 'rateLimits:account'])
+  expect(session.lines).toEqual(['c27 s50/2:13 w40'])
+})
+
+test('leaves a covered reading another session wrote a moment ago, as one it may still be writing', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  const store = sharedStore(on, [fiveHour(50), sevenDay(40)])
+  store.put('rateLimits:closed', [fiveHour(10), sevenDay(30)], NOW - 60_000)
+  engine(on, undefined)
+
+  await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
+
+  expect(store.values.has('rateLimits:closed')).toBe(true)
+})
+
+test('removes what an earlier build kept and a reading it cannot place', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  const store = sharedStore(on)
+  store.values.set('rateLimits', [fiveHour(50)])
+  store.put('rateLimits:broken', [{ kind: 'five_hour', percentUsed: 50, resetsAt: 'soon' }], LONG_AGO)
+  engine(on, undefined)
+
+  await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
+
+  expect(OTHERS.filter(key => store.values.has(key))).toEqual([])
+})
+
+test('takes its own reading out while another covers it, and puts it back once none does', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const store = sharedStore(on, [fiveHour(50), sevenDay(40)])
+  engine(on, clock)
+
+  await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
+  const covered = store.own()
+  store.values.delete('rateLimits:other')
+  await clock.advance(60_000)
+
+  expect([covered, store.own()]).toEqual([undefined, LIMITS])
 })
 
 test('keeps one of two readings shared alike', async ($, on) => {
   mock.clock(on, { now: NOW })
   const store = sharedStore(on, [fiveHour(50), sevenDay(40)])
-  store.values.set('rateLimits:twin', [fiveHour(50), sevenDay(40)])
+  store.put('rateLimits:twin', [fiveHour(50), sevenDay(40)], LONG_AGO)
   const session = engine(on, undefined)
 
   await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
 
-  expect([store.values.has('rateLimits:other'), store.values.has('rateLimits:twin')]).toEqual([true, false])
+  expect(OTHERS.filter(key => store.values.has(key))).toEqual(['rateLimits:other'])
   expect(session.lines).toEqual(['c27 s50/2:13 w40'])
 })
 
-test('takes its reading out of the store as the session ends, and shares again after a /clear', async ($, on) => {
+test('keeps the newest reading of a window as the session ends', async ($, on) => {
   mock.clock(on, { now: NOW })
   const store = sharedStore(on)
+  store.put('rateLimits:closed', [fiveHour(10), sevenDay(30)])
   engine(on, undefined)
 
   await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
+  await $.session.end({ reason: 'prompt_input_exit', sessionId: 'first', resume: { id: 'first' } })
+
+  expect(store.own()).toEqual(LIMITS)
+})
+
+test('takes a covered reading out as the session ends, and shares again after a /clear', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  const store = sharedStore(on)
+  const session = engine(on, undefined)
+  session.surfaces = ['terminal']
+
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
   const shared = store.own()
+  store.put('rateLimits:other', [fiveHour(50), sevenDay(40)])
   await $.session.end({ reason: 'clear', sessionId: 'first', resume: { id: 'first' } })
   const ended = store.own()
+  store.values.delete('rateLimits:other')
   await $.session.measure({ context: CONTEXT, rateLimits: LIMITS, changed: ['context'] })
   await settle()
 
@@ -256,7 +329,7 @@ test('picks up a reading another session shares on the next turn of the countdow
   const session = engine(on, clock)
 
   await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
-  store.values.set('rateLimits:other', [fiveHour(30), sevenDay(36)])
+  store.put('rateLimits:other', [fiveHour(30), sevenDay(36)])
   await clock.advance(60_000)
 
   expect(session.lines).toEqual(['c27 s12/2:13 w34', 'c27 s30/2:12 w36'])
@@ -280,7 +353,7 @@ test('reads what the other sessions shared as the desktop app attaches', async (
   session.surfaces = ['terminal']
 
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
-  store.values.set('rateLimits:other', [fiveHour(50), sevenDay(40)])
+  store.put('rateLimits:other', [fiveHour(50), sevenDay(40)])
   session.surfaces = ['desktop']
   await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
 

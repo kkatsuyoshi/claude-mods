@@ -1,18 +1,20 @@
 import type { EngineInterface, Register, SessionContextUsage, SessionRateLimit, Timer } from 'claude-code'
 
 import { formatUsage, untilCountdownMoves } from './format'
-import { adoptLimits, coveredKeys, limitsKey, mergeLimits, parseLimits, shareable } from './limits'
+import { adoptLimits, isCovered, limitsKey, mergeLimits, parseShared, resetsKey, shareable } from './limits'
 
 // What one session knows and draws, kept in one place for the hooks and the countdown alike
 type Session = {
   // this session's key in the store
   id: string
   context?: SessionContextUsage
-  // the windows as this session last read them, and as the sessions on this machine last shared them
+  // the windows as this session last read them, and every reading the other sessions under this configuration
+  // directory last shared
   own: SessionRateLimit[]
   shared: SessionRateLimit[]
-  // what this session last wrote to the store
+  // the reading this session's key holds (limitsKey), undefined when unknown; and its writes, one after another
   sharedKey?: string
+  writing: Promise<void>
   isShown: boolean
   // the countdown's timer, and the resets it was armed for
   timer?: Timer
@@ -47,35 +49,73 @@ async function draw($: EngineInterface, session: Session, now?: number) {
 // The limits are shared with the other sessions under this configuration directory through the store, each session
 // under a key of its own, so none ever writes over another's reading
 const SHARED = 'rateLimits:'
+// what an earlier build of this mod kept all the sessions' readings under
+const LEGACY = 'rateLimits'
+// another session's key that adds nothing is removed only once unwritten this long, so a reading its owner writes
+// while it is being weighed is not lost with it
+const STALE_MS = 10 * 60_000
 
-// The windows as the sessions last shared them, the newest of each; the keys that no longer add anything, as a closed
-// session's reading that a newer one covers, are removed. None when the store cannot be read
-async function readShared($: EngineInterface, now: number) {
-  try {
-    const keys = (await $.store.keys()).filter(key => key.startsWith(SHARED))
-    const shared = await Promise.all(keys.map(async key => [key, parseLimits(await $.store.get(key))] as const))
-    const covered = coveredKeys(shared, now)
-    await Promise.all(covered.map(key => $.store.delete(key)))
-    return mergeLimits(...shared.filter(([key]) => !covered.includes(key)).map(([, limits]) => limits))
-  } catch (error) {
-    $.ui.log(`usage: reading the shared limits failed: ${String(error)}`, { to: 'debug' })
-    return []
+const ownKey = (session: Session) => SHARED + session.id
+
+// Writes or removes this session's key, after its earlier writes, so the store ends on the last
+function write($: EngineInterface, session: Session, limits: readonly SessionRateLimit[] | undefined, now: number) {
+  session.sharedKey = limitsKey(limits ?? [])
+  session.writing = session.writing.then(() =>
+    (limits === undefined ? $.store.delete(ownKey(session)) : $.store.set(ownKey(session), { at: now, limits })).catch(
+      error => {
+        session.sharedKey = undefined
+        $.ui.log(`usage: sharing the limits failed: ${String(error)}`, { to: 'debug' })
+      },
+    ),
+  )
+  return session.writing
+}
+
+// Writes this session's own reading under its key when it changed
+async function share($: EngineInterface, session: Session) {
+  const limits = shareable(session.own)
+  if (limitsKey(limits) !== session.sharedKey) {
+    const now = await $.clock.now().catch(() => Date.now())
+    await write($, session, limits.length === 0 ? undefined : limits, now)
   }
 }
 
-// Writes this session's own reading under its key, only when it changed
-async function share($: EngineInterface, session: Session) {
-  const limits = shareable(session.own)
-  const key = limitsKey(limits)
-  if (key === session.sharedKey) {
+// Every entry the sessions shared; none when the store cannot be read
+async function readEntries($: EngineInterface) {
+  try {
+    const keys = await $.store.keys()
+    if (keys.includes(LEGACY)) {
+      await $.store.delete(LEGACY).catch(() => undefined)
+    }
+    return await Promise.all(keys.filter(key => key.startsWith(SHARED)).map(async key => parseShared(key, await $.store.get(key))))
+  } catch (error) {
+    $.ui.log(`usage: reading the shared limits failed: ${String(error)}`, { to: 'debug' })
+    return undefined
+  }
+}
+
+// Reads what the other sessions shared, and keeps the store lean: this session takes its own key out while another
+// covers it and puts it back once none does; another session's key that adds nothing goes once it is stale, as a
+// closed session's
+async function readShared($: EngineInterface, session: Session, now: number) {
+  const entries = await readEntries($)
+  if (entries === undefined) {
     return
   }
-  session.sharedKey = key
-  try {
-    await (limits.length === 0 ? $.store.delete(SHARED + session.id) : $.store.set(SHARED + session.id, limits))
-  } catch (error) {
-    session.sharedKey = undefined
-    $.ui.log(`usage: sharing the limits failed: ${String(error)}`, { to: 'debug' })
+  const others = entries.filter(entry => entry.key !== ownKey(session))
+  const stale = others.filter(entry => now - entry.at >= STALE_MS && isCovered(entry.key, entry.limits, entries, now))
+  await Promise.all(stale.map(entry => $.store.delete(entry.key).catch(() => undefined)))
+  session.shared = others.filter(entry => !stale.includes(entry)).flatMap(entry => entry.limits)
+
+  const limits = shareable(session.own)
+  const held = entries.find(entry => entry.key === ownKey(session))
+  if (isCovered(ownKey(session), limits, entries, now)) {
+    if (held !== undefined) {
+      await write($, session, undefined, now)
+    }
+    session.sharedKey = limitsKey(limits)
+  } else if (held === undefined || limitsKey(held.limits) !== limitsKey(limits)) {
+    await write($, session, limits, now)
   }
 }
 
@@ -86,7 +126,7 @@ async function redraw($: EngineInterface, session: Session) {
   if (session.isShown) {
     const now = await $.clock.now().catch(() => undefined)
     if (now !== undefined) {
-      session.shared = await readShared($, now)
+      await readShared($, session, now)
     }
     await draw($, session, now)
     return
@@ -97,9 +137,6 @@ async function redraw($: EngineInterface, session: Session) {
 // The line changes on its own while nothing is measured, as the reset countdown turns over, a window resets and
 // another session shares a newer reading: one timer redraws it then and waits for the next change, armed only while
 // the line is shown
-const resetsOf = (limits: readonly SessionRateLimit[]) =>
-  limits.map(limit => `${limit.kind}@${limit.resetsAt ?? ''}`).join(' ')
-
 function stopCountdown(session: Session) {
   session.timer?.cancel()
   session.timer = undefined
@@ -117,7 +154,7 @@ async function armCountdown($: EngineInterface, session: Session, now?: number) 
     // a clock that fails to answer still keeps the countdown going, a minute at a time
     const at = now ?? (await $.clock.now().catch(() => undefined))
     const limits = at === undefined ? session.own : limitsAt(session, at)
-    const resets = resetsOf(limits)
+    const resets = resetsKey(limits)
     if (session.timer !== undefined && session.resets === resets) {
       return
     }
@@ -140,7 +177,7 @@ async function tickCountdown($: EngineInterface, session: Session) {
   const now = await $.clock.now().catch(() => undefined)
   if (session.isShown) {
     if (now !== undefined) {
-      session.shared = await readShared($, now)
+      await readShared($, session, now)
     }
     await draw($, session, now)
   }
@@ -148,7 +185,7 @@ async function tickCountdown($: EngineInterface, session: Session) {
 }
 
 export const register: Register = on => {
-  const session: Session = { id: crypto.randomUUID(), own: [], shared: [], isShown: false }
+  const session: Session = { id: crypto.randomUUID(), own: [], shared: [], isShown: false, writing: Promise.resolve() }
 
   on('session.start', async ($, e, next) => {
     const result = await next(e)
@@ -193,14 +230,18 @@ export const register: Register = on => {
     return result
   })
 
-  // an ending session takes its reading out of the store; after a /clear the process goes on, and shares again with
-  // its next reading
+  // an ending session takes its key out of the store when another covers it, after its last write; one holding the
+  // newest reading of a window stays for the others, until a newer one covers it. After a /clear the process goes on,
+  // and shares again with its next reading
   on('session.end', async ($, e, next) => {
     const result = await next(e)
+    await session.writing
+    const entries = await readEntries($)
+    const now = await $.clock.now().catch(() => undefined)
+    if (entries !== undefined && now !== undefined && isCovered(ownKey(session), shareable(session.own), entries, now)) {
+      await write($, session, undefined, now)
+    }
     session.sharedKey = undefined
-    await $.store
-      .delete(SHARED + session.id)
-      .catch(error => $.ui.log(`usage: removing the shared limits failed: ${String(error)}`, { to: 'debug' }))
 
     return result
   })
