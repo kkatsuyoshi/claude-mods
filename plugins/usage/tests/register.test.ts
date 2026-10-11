@@ -54,6 +54,18 @@ test('rounds the time until the reset down to the minute', async ($, on) => {
   expect(session.lines.at(-1)).toBe('c27 s12/0:00 w34')
 })
 
+test('turns the countdown over as the minute left runs out, not a minute from the session start', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-10-11T10:00:30Z') })
+  const session = engine(on, clock)
+
+  await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
+  await clock.advance(30_000)
+  const before = session.lines.at(-1)
+  await clock.advance(1)
+
+  expect([before, session.lines.at(-1)]).toEqual(['c27 s12/2:12 w34', 'c27 s12/2:11 w34'])
+})
+
 test('redraws on each measurement, leaving out a figure not yet reported', async ($, on) => {
   const clock = mock.clock(on, { now: NOW })
   const session = engine(on, clock, { context: { window: 200000 }, rateLimits: [] })
@@ -69,7 +81,7 @@ test('counts a window whose reset has passed as started over', async ($, on) => 
   const session = engine(on, clock)
 
   await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
-  await clock.set(Date.parse('2026-10-11T12:13:00Z'))
+  await clock.set(Date.parse('2026-10-11T12:13:00Z') + 1)
 
   expect(session.lines.at(-1)).toBe('c27 s0 w34')
 })

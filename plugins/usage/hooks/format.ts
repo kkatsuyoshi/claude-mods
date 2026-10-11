@@ -17,10 +17,20 @@ const used = (limit: SessionRateLimit | undefined, now: number) =>
 const percent = (label: string, value: number | undefined) =>
   value === undefined ? undefined : `${label}${Math.floor(value)}`
 
+const limitOf = (rateLimits: readonly SessionRateLimit[], kind: string) => rateLimits.find(each => each.kind === kind)
+
+// Milliseconds until the countdown shows the next minute: just past the moment the time left drops below a whole
+// minute, so the line turns over with Claude Desktop's rather than up to a minute after; a minute when no reset is ahead
+export const untilCountdownMoves = (rateLimits: readonly SessionRateLimit[], now: number) => {
+  const left = Date.parse(limitOf(rateLimits, 'five_hour')?.resetsAt ?? '') - now
+
+  return left > 0 ? (left % 60_000) + 1 : 60_000
+}
+
 // `c16 s57/4:25 w6`: context, current session (five_hour) with the time until it resets, week (seven_day);
 // a figure not yet reported is left out
 export const formatUsage = (context: SessionContextUsage, rateLimits: readonly SessionRateLimit[], now: number) => {
-  const limit = (kind: string) => rateLimits.find(each => each.kind === kind)
+  const limit = (kind: string) => limitOf(rateLimits, kind)
   const session = limit('five_hour')
   const reset = session && timeLeft(session.resetsAt, now)
   const line = [

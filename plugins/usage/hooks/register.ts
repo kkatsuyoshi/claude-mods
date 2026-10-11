@@ -1,6 +1,6 @@
 import type { EngineInterface, Register, SessionUsage, Timer } from 'claude-code'
 
-import { formatUsage } from './format'
+import { formatUsage, untilCountdownMoves } from './format'
 
 type Usage = Pick<SessionUsage, 'context' | 'rateLimits'>
 
@@ -29,21 +29,34 @@ async function redraw($: EngineInterface, current: () => Usage | undefined) {
   return isShown
 }
 
+// The reset countdown moves while nothing is measured: it redraws as each minute of it turns over, then waits for the
+// next; one timer, however often a session starts or a measurement moves the reset
+type Countdown = { timer?: Timer; usage: () => Usage | undefined; isShown: () => boolean }
+
+async function scheduleCountdown($: EngineInterface, countdown: Countdown) {
+  // a clock that fails to answer still keeps the countdown going, a minute at a time
+  const delay = await $.clock.now().then(
+    now => untilCountdownMoves(countdown.usage()?.rateLimits ?? [], now),
+    () => 60_000,
+  )
+  countdown.timer?.cancel()
+  countdown.timer = $.clock.after(delay, () => {
+    if (countdown.isShown()) {
+      void draw($, countdown.usage(), true)
+    }
+    void scheduleCountdown($, countdown)
+  })
+}
+
 export const register: Register = on => {
   let usage: Usage | undefined
   let isShown = false
-  let countdown: Timer | undefined
+  const countdown: Countdown = { usage: () => usage, isShown: () => isShown }
 
   on('session.start', async ($, e, next) => {
     const result = await next(e)
-    // the reset countdown moves while nothing is measured; one timer, however often a session starts
-    countdown?.cancel()
-    countdown = $.clock.every(60_000, () => {
-      if (isShown) {
-        void draw($, usage, isShown)
-      }
-    })
     usage = await $.session.usage().catch(() => usage)
+    await scheduleCountdown($, countdown)
     isShown = await redraw($, () => usage)
 
     return result
@@ -51,6 +64,7 @@ export const register: Register = on => {
 
   on('session.measure', async ($, e, next) => {
     usage = e
+    await scheduleCountdown($, countdown)
     await draw($, usage, isShown)
 
     return next(e)
