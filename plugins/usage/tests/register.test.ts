@@ -33,17 +33,46 @@ const engine = (on: On, clock: MockClock | undefined, start: Pick<SessionUsage, 
 
 // A clock standing still at NOW that counts the countdown's timers and never fires them, or refuses them all
 const stillClock = (on: On, refuse = false) => {
-  const timers = { armed: 0 }
+  const timers = { armed: 0, waits: [] as number[] }
   on('clock.now', () => ({ value: NOW }))
-  on('clock.after', () => {
+  on('clock.after', ($, e) => {
     if (refuse) {
       throw new Error('refused')
     }
     timers.armed++
+    timers.waits.push(e.ms)
     return new Promise<never>(() => {})
   })
 
   return timers
+}
+
+// A clock that creeps on a millisecond with every reading, as a real one moves between two reads, and fires each
+// timer when the test says, as early as the test says
+const creepingClock = (on: On, start: number) => {
+  let now = start
+  const timers: { due: number; fire: () => void }[] = []
+  on('clock.now', () => ({ value: now++ }))
+  on('clock.after', ($, e) => new Promise<{ value: undefined }>(resolve => {
+    timers.push({ due: now + e.ms, fire: () => resolve({ value: undefined }) })
+  }))
+
+  const settle = async () => {
+    for (let turn = 0; turn < 50; turn++) {
+      await Promise.resolve()
+    }
+  }
+
+  return {
+    // fires the timer armed last, `early` ms before it is due, and lets what it starts run
+    fire: async (early = 0) => {
+      await settle()
+      const timer = timers.pop()!
+      now = timer.due - early
+      timer.fire()
+      await settle()
+    },
+  }
 }
 
 test('pins the figures in the desktop app and counts the reset down each minute', async ($, on) => {
@@ -90,6 +119,28 @@ test('draws the week as started over the moment its reset passes, not on the nex
   await clock.advance(20_000)
 
   expect(session.lines).toEqual(['c27 s12/2:13 w34', 'c27 s12/2:13 w0'])
+})
+
+test('turns over on time even when a timer fires a moment early', async ($, on) => {
+  const clock = creepingClock(on, NOW)
+  const session = engine(on, undefined)
+
+  await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
+  // due as 2:13 left turns to 2:12; fired 1 ms early, it draws 2:13 and is due again a moment later
+  await clock.fire(1)
+  await clock.fire()
+
+  expect(session.lines.at(-1)).toBe('c27 s12/2:12 w34')
+})
+
+test('waits a minute at most, even with the week reset days ahead', async ($, on) => {
+  const timers = stillClock(on)
+  const passed: SessionRateLimit[] = [{ ...LIMITS[0]!, resetsAt: '2026-10-11T09:00:00Z' }, LIMITS[1]!]
+  engine(on, undefined, { context: CONTEXT, rateLimits: passed })
+
+  await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
+
+  expect(timers.waits).toEqual([60_000])
 })
 
 test('keeps no countdown while the line is hidden', async ($, on) => {

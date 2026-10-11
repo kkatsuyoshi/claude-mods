@@ -20,17 +20,14 @@ const percent = (label: string, value: number | undefined) =>
 const limitOf = (rateLimits: readonly SessionRateLimit[], kind: string) => rateLimits.find(each => each.kind === kind)
 
 // Milliseconds until the line next changes on its own: the moment the session's time left reaches a whole minute, so
-// the countdown turns over with Claude Desktop's, or the moment the week resets, whichever comes first; a minute when
-// no reset is ahead
+// the countdown turns over with Claude Desktop's, or the moment the week resets, whichever comes first; never more
+// than a minute, so a timer lost on the way costs a minute at most
 export const untilCountdownMoves = (rateLimits: readonly SessionRateLimit[], now: number) => {
   const left = (kind: string) => Date.parse(limitOf(rateLimits, kind)?.resetsAt ?? '') - now
   const session = left('five_hour')
   const week = left('seven_day')
-  const waits = [session > 0 ? session % 60_000 || 60_000 : undefined, week > 0 ? week : undefined].filter(
-    (wait): wait is number => wait !== undefined,
-  )
 
-  return waits.length > 0 ? Math.min(...waits) : 60_000
+  return Math.min(session > 0 ? session % 60_000 || 60_000 : 60_000, week > 0 ? week : 60_000)
 }
 
 // `c16 s57/4:25 w6`: context, current session (five_hour) with the time until it resets, week (seven_day);

@@ -7,11 +7,13 @@ type Usage = Pick<SessionUsage, 'context' | 'rateLimits'>
 // Only the draw started last may write the line: one started earlier and still awaiting the clock holds older figures
 let latestDraw = 0
 
-// The line is for the Claude desktop app alone: a session a terminal draws on keeps its status line clear
-async function draw($: EngineInterface, usage: Usage | undefined, isShown: boolean) {
+// The line is for the Claude desktop app alone: a session a terminal draws on keeps its status line clear.
+// Drawn as at `now`, or as the clock reads when not given
+async function draw($: EngineInterface, usage: Usage | undefined, isShown: boolean, now?: number) {
   const ticket = ++latestDraw
   try {
-    const text = isShown && usage !== undefined ? formatUsage(usage.context, usage.rateLimits, await $.clock.now()) : undefined
+    const text =
+      isShown && usage !== undefined ? formatUsage(usage.context, usage.rateLimits, now ?? (await $.clock.now())) : undefined
     if (ticket === latestDraw) {
       $.ui.status(text)
     }
@@ -42,9 +44,9 @@ function stopCountdown(countdown: Countdown) {
   countdown.resets = undefined
 }
 
-// Arms the timer for the next change, or keeps the one armed for the same resets; stops it while the line is hidden.
-// A failure costs the countdown alone, never the line or the hook that asked
-async function armCountdown($: EngineInterface, countdown: Countdown) {
+// Arms the timer for the next change as from `now` (or the clock's reading), or keeps the one armed for the same
+// resets; stops it while the line is hidden. A failure costs the countdown alone, never the line or the hook that asked
+async function armCountdown($: EngineInterface, countdown: Countdown, now?: number) {
   if (!countdown.isShown()) {
     stopCountdown(countdown)
     return
@@ -55,23 +57,28 @@ async function armCountdown($: EngineInterface, countdown: Countdown) {
   }
   try {
     // a clock that fails to answer still keeps the countdown going, a minute at a time
-    const delay = await $.clock.now().then(
-      now => untilCountdownMoves(countdown.usage()?.rateLimits ?? [], now),
-      () => 60_000,
-    )
+    const at = now ?? (await $.clock.now().catch(() => undefined))
+    const delay = at === undefined ? 60_000 : untilCountdownMoves(countdown.usage()?.rateLimits ?? [], at)
     countdown.timer?.cancel()
     countdown.resets = resets
     countdown.timer = $.clock.after(delay, () => {
       countdown.timer = undefined
-      if (countdown.isShown()) {
-        void draw($, countdown.usage(), true)
-      }
-      void armCountdown($, countdown)
+      void tickCountdown($, countdown)
     })
   } catch (error) {
     stopCountdown(countdown)
     $.ui.log(`usage: the reset countdown stopped: ${String(error)}`, { to: 'debug' })
   }
+}
+
+// One turn of the countdown: a single reading of the clock both draws the line and times the next turn, so the two
+// never disagree about which minute it is; a timer that fires a moment early draws that moment and turns again on time
+async function tickCountdown($: EngineInterface, countdown: Countdown) {
+  const now = await $.clock.now().catch(() => undefined)
+  if (countdown.isShown()) {
+    await draw($, countdown.usage(), true, now)
+  }
+  await armCountdown($, countdown, now)
 }
 
 export const register: Register = on => {
