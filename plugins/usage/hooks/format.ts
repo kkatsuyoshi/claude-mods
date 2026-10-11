@@ -7,8 +7,13 @@ const timeLeft = (resetsAt: string | undefined, now: number) => {
   return minutes > 0 ? `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, '0')}` : undefined
 }
 
+// A window whose reset has passed has started over, so its last reading no longer holds
+const used = (limit: SessionRateLimit | undefined, now: number) =>
+  limit === undefined ? undefined : Date.parse(limit.resetsAt ?? '') <= now ? 0 : limit.percentUsed
+
+// Rounded down, so a window shows 100 only once it is used up
 const percent = (label: string, value: number | undefined) =>
-  value === undefined ? undefined : `${label}${Math.round(value)}`
+  value === undefined ? undefined : `${label}${Math.floor(value)}`
 
 // `c16 s57/4:25 w6`: context, current session (five_hour) with the time until it resets, week (seven_day);
 // a figure not yet reported is left out
@@ -18,8 +23,8 @@ export const formatUsage = (context: SessionContextUsage, rateLimits: readonly S
   const reset = session && timeLeft(session.resetsAt, now)
   const line = [
     percent('c', context.percent),
-    session && percent('s', session.percentUsed) + (reset === undefined ? '' : `/${reset}`),
-    percent('w', limit('seven_day')?.percentUsed),
+    session && percent('s', used(session, now)) + (reset === undefined ? '' : `/${reset}`),
+    percent('w', used(limit('seven_day'), now)),
   ]
     .filter(figure => figure !== undefined)
     .join(' ')
