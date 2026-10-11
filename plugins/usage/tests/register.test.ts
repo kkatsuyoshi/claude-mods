@@ -9,7 +9,7 @@ const LIMITS: SessionRateLimit[] = [
 ]
 
 // The engine beneath the mod: where the session is drawn (changeable mid-test), what it measured, the lines pinned
-const engine = (on: On, clock: MockClock, start: Pick<SessionUsage, 'context' | 'rateLimits'> = { context: CONTEXT, rateLimits: LIMITS }) => {
+const engine = (on: On, clock: MockClock | undefined, start: Pick<SessionUsage, 'context' | 'rateLimits'> = { context: CONTEXT, rateLimits: LIMITS }) => {
   const session = { surfaces: ['desktop'] as readonly RenderSurface[], surfacesLateMs: 0, lines: [] as (string | undefined)[] }
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.measure', ($, e) => ({ changed: e.changed }))
@@ -19,7 +19,7 @@ const engine = (on: On, clock: MockClock, start: Pick<SessionUsage, 'context' | 
   on('session.surfaces', async () => {
     const surfaces = session.surfaces
     if (session.surfacesLateMs > 0) {
-      await clock.sleep(session.surfacesLateMs)
+      await clock?.sleep(session.surfacesLateMs)
     }
     return { value: surfaces }
   })
@@ -29,6 +29,21 @@ const engine = (on: On, clock: MockClock, start: Pick<SessionUsage, 'context' | 
   })
 
   return session
+}
+
+// A clock standing still at NOW that counts the countdown's timers and never fires them, or refuses them all
+const stillClock = (on: On, refuse = false) => {
+  const timers = { armed: 0 }
+  on('clock.now', () => ({ value: NOW }))
+  on('clock.after', () => {
+    if (refuse) {
+      throw new Error('refused')
+    }
+    timers.armed++
+    return new Promise<never>(() => {})
+  })
+
+  return timers
 }
 
 test('pins the figures in the desktop app and counts the reset down each minute', async ($, on) => {
@@ -64,6 +79,58 @@ test('turns the countdown over as the minute left runs out, not a minute from th
   await clock.advance(1)
 
   expect([before, session.lines.at(-1)]).toEqual(['c27 s12/2:12 w34', 'c27 s12/2:11 w34'])
+})
+
+test('draws the week as started over the moment its reset passes, not on the next turn of the countdown', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const weekSoon: SessionRateLimit[] = [LIMITS[0]!, { kind: 'seven_day', percentUsed: 34, resetsAt: '2026-10-11T10:00:20Z' }]
+  const session = engine(on, clock, { context: CONTEXT, rateLimits: weekSoon })
+
+  await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
+  await clock.advance(20_001)
+
+  expect(session.lines).toEqual(['c27 s12/2:13 w34', 'c27 s12/2:12 w34', 'c27 s12/2:12 w0'])
+})
+
+test('keeps no countdown while the line is hidden', async ($, on) => {
+  const timers = stillClock(on)
+  const session = engine(on, undefined)
+  session.surfaces = ['terminal']
+
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await $.session.measure({ context: CONTEXT, rateLimits: LIMITS, changed: ['context'] })
+  session.surfaces = ['desktop']
+  await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
+  const whileShown = timers.armed
+  session.surfaces = ['terminal']
+  await $.session.attach({ surface: 'terminal', clientId: 'terminal:default' })
+  await $.session.measure({ context: { ...CONTEXT, percent: 30 }, rateLimits: [{ ...LIMITS[0]!, resetsAt: '2026-10-11T14:00:00Z' }], changed: ['rateLimits'] })
+
+  expect([whileShown, timers.armed]).toEqual([1, 1])
+})
+
+test('re-arms the countdown only when a reset moves', async ($, on) => {
+  const timers = stillClock(on)
+  engine(on, undefined)
+
+  await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
+  await $.session.measure({ context: { ...CONTEXT, percent: 30 }, rateLimits: LIMITS, changed: ['context'] })
+  const unmoved = timers.armed
+  const moved = [{ ...LIMITS[0]!, resetsAt: '2026-10-11T14:00:00Z' }, LIMITS[1]!]
+  await $.session.measure({ context: CONTEXT, rateLimits: moved, changed: ['rateLimits'] })
+  await Promise.resolve()
+
+  expect([unmoved, timers.armed]).toEqual([1, 2])
+})
+
+test('still pins the line when the countdown cannot be armed', async ($, on) => {
+  stillClock(on, true)
+  const session = engine(on, undefined)
+
+  await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
+  await $.session.measure({ context: { ...CONTEXT, percent: 30 }, rateLimits: LIMITS, changed: ['context'] })
+
+  expect(session.lines).toEqual(['c27 s12/2:13 w34', 'c30 s12/2:13 w34'])
 })
 
 test('redraws on each measurement, leaving out a figure not yet reported', async ($, on) => {
