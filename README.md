@@ -20,6 +20,8 @@ For Claude Desktop (Code tab) only. It leaves the terminal (CLI) display unchang
 
 A figure not reported is left out. The line refreshes after each turn and the reset countdown every minute.
 
+The limits are the figures from this session's latest response. Usage elsewhere, such as in other sessions, shows up only with this session's next response, so the line can read lower than Claude Desktop's own usage view.
+
 ## Install
 
 Requires Claude Code 2.1.287 or later, the first release with mods (tested on 2.1.295).
