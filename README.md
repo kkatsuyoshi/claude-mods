@@ -1,4 +1,4 @@
-# claude-mods
+# claude-mods / Usage
 
 [日本語](README.ja.md)
 
@@ -25,5 +25,11 @@ A figure not reported is left out. The line refreshes after each turn and the re
 Requires Claude Code 2.1.287 or later, the first release with mods (tested on 2.1.295).
 
 1. In the Code tab of Claude Desktop, click **+** below the prompt box → **Add plugins**.
-2. Click **+ Add** (top right) → **Add marketplace** → **Add from a repository**, and enter `kkatsuyoshi/claude-mods`.
-3. Click **+** → **Add plugins**, and pick `usage`.
+2. Click **+ Add** (top right) → **Add marketplace** → **Add from a repository**, enter `kkatsuyoshi/claude-mods`, and click **Sync**.
+3. Click **Add** on **Usage** (if you can't find **Usage**, scroll down on the **Add plugins** screen and go to **On this computer** → **kkatsuyoshi**).
+
+## Uninstall
+
+1. In the Code tab of Claude Desktop, click **+** below the prompt box → **Add plugins**.
+2. Scroll down and click **On this computer** → **kkatsuyoshi**.
+3. Open the **…** menu to the right of **Usage** and click **Remove**.
