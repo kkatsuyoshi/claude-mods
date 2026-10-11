@@ -1,0 +1,10 @@
+{
+  "name": "usage",
+  "version": "0.1.0",
+  "description": "Pins context window, current session and weekly usage as a status line under the prompt in the Claude desktop app",
+  "author": { "name": "KANEMOTO Katsuyoshi", "url": "https://github.com/kkatsuyoshi" },
+  "homepage": "https://github.com/kkatsuyoshi/claude-mods",
+  "repository": "https://github.com/kkatsuyoshi/claude-mods",
+  "license": "MIT",
+  "keywords": ["status-line", "usage", "rate-limit", "context"]
+}
