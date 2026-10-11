@@ -44,8 +44,25 @@ export const adoptLimits = (own: readonly SessionRateLimit[], shared: readonly S
     )
   })
 
-// Whether every window in the list has reset by `now`, so its readings no longer count
-export const hasPassed = (limits: readonly SessionRateLimit[], now: number) => limits.every(limit => resetOf(limit) <= now)
+// The keys the sessions shared under that no longer add anything, to be removed: each of a key's readings has either
+// reset by `now`, or is held as far by another key's reading of the same window (on a tie, the key that sorts first
+// stands). A reading is weighed only against its own window, so another account's key never covers one of this one's
+export const coveredKeys = (shared: readonly (readonly [string, readonly SessionRateLimit[]])[], now: number) => {
+  const isCovered = (key: string, limit: SessionRateLimit) =>
+    resetOf(limit) <= now ||
+    shared.some(
+      ([other, limits]) =>
+        other !== key &&
+        limits.some(
+          each =>
+            each.kind === limit.kind &&
+            isSameWindow(each, limit) &&
+            (each.percentUsed > limit.percentUsed || (each.percentUsed === limit.percentUsed && other < key)),
+        ),
+    )
+
+  return shared.filter(([key, limits]) => limits.every(limit => isCovered(key, limit))).map(([key]) => key)
+}
 
 // The readings worth sharing: one without a reset tells no window, so another session cannot place it
 export const shareable = (limits: readonly SessionRateLimit[]) => limits.filter(limit => !Number.isNaN(resetOf(limit)))

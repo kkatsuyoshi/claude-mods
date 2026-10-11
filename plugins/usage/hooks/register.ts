@@ -1,7 +1,7 @@
 import type { EngineInterface, Register, SessionContextUsage, SessionRateLimit, Timer } from 'claude-code'
 
 import { formatUsage, untilCountdownMoves } from './format'
-import { adoptLimits, hasPassed, limitsKey, mergeLimits, parseLimits, shareable } from './limits'
+import { adoptLimits, coveredKeys, limitsKey, mergeLimits, parseLimits, shareable } from './limits'
 
 // What one session knows and draws, kept in one place for the hooks and the countdown alike
 type Session = {
@@ -48,22 +48,15 @@ async function draw($: EngineInterface, session: Session, now?: number) {
 // under a key of its own, so none ever writes over another's reading
 const SHARED = 'rateLimits:'
 
-// The windows as the sessions last shared them, the newest of each; a session's key whose windows have all reset is
-// removed. None when the store cannot be read
+// The windows as the sessions last shared them, the newest of each; the keys that no longer add anything, as a closed
+// session's reading that a newer one covers, are removed. None when the store cannot be read
 async function readShared($: EngineInterface, now: number) {
   try {
     const keys = (await $.store.keys()).filter(key => key.startsWith(SHARED))
-    const lists = await Promise.all(
-      keys.map(async key => {
-        const limits = parseLimits(await $.store.get(key))
-        if (hasPassed(limits, now)) {
-          await $.store.delete(key)
-          return []
-        }
-        return limits
-      }),
-    )
-    return mergeLimits(...lists)
+    const shared = await Promise.all(keys.map(async key => [key, parseLimits(await $.store.get(key))] as const))
+    const covered = coveredKeys(shared, now)
+    await Promise.all(covered.map(key => $.store.delete(key)))
+    return mergeLimits(...shared.filter(([key]) => !covered.includes(key)).map(([, limits]) => limits))
   } catch (error) {
     $.ui.log(`usage: reading the shared limits failed: ${String(error)}`, { to: 'debug' })
     return []
@@ -196,6 +189,18 @@ export const register: Register = on => {
     const result = await next(e)
     await redraw($, session)
     await armCountdown($, session)
+
+    return result
+  })
+
+  // an ending session takes its reading out of the store; after a /clear the process goes on, and shares again with
+  // its next reading
+  on('session.end', async ($, e, next) => {
+    const result = await next(e)
+    session.sharedKey = undefined
+    await $.store
+      .delete(SHARED + session.id)
+      .catch(error => $.ui.log(`usage: removing the shared limits failed: ${String(error)}`, { to: 'debug' }))
 
     return result
   })
