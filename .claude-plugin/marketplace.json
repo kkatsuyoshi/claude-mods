@@ -6,7 +6,7 @@
     {
       "name": "usage",
       "source": "./plugins/usage",
-      "description": "Pins context window, current session and weekly usage as a status line under the prompt in the Claude desktop app"
+      "description": "Pins context window, current session and weekly usage as a status line under the prompt in Claude Desktop"
     }
   ]
 }
