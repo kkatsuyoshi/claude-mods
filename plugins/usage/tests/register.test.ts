@@ -43,6 +43,17 @@ test('pins the figures in the desktop app and counts the reset down each minute'
   expect(session.lines.at(-1)).toBe('c27 s12/0:13 w34')
 })
 
+test('rounds the time until the reset down to the minute', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-10-11T10:00:30Z') })
+  const session = engine(on, clock)
+
+  await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
+  await clock.set(Date.parse('2026-10-11T12:12:30Z'))
+
+  expect(session.lines.slice(0, 1)).toEqual(['c27 s12/2:12 w34'])
+  expect(session.lines.at(-1)).toBe('c27 s12/0:00 w34')
+})
+
 test('redraws on each measurement, leaving out a figure not yet reported', async ($, on) => {
   const clock = mock.clock(on, { now: NOW })
   const session = engine(on, clock, { context: { window: 200000 }, rateLimits: [] })
@@ -124,5 +135,5 @@ test('never pins older figures over newer ones when draws overlap', async ($, on
   await clock.advance(1_000)
   await attaching
 
-  expect(session.lines.at(-1)).toBe('c40 s12/2:13 w34')
+  expect(session.lines.at(-1)).toBe('c40 s12/2:12 w34')
 })

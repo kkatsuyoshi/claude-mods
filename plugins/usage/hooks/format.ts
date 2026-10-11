@@ -1,10 +1,12 @@
 import type { SessionContextUsage, SessionRateLimit } from 'claude-code'
 
-// `4:25`, `0:47`: hours and minutes left until `resetsAt`, rounded up to the minute; none once it has passed
+// `4:25`, `0:47`: hours and minutes left until `resetsAt`, rounded down to the minute as Claude Desktop shows them;
+// none once it has passed
 const timeLeft = (resetsAt: string | undefined, now: number) => {
-  const minutes = Math.ceil((Date.parse(resetsAt ?? '') - now) / 60_000)
+  const left = Date.parse(resetsAt ?? '') - now
+  const minutes = Math.floor(left / 60_000)
 
-  return minutes > 0 ? `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, '0')}` : undefined
+  return left > 0 ? `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, '0')}` : undefined
 }
 
 // A window whose reset has passed has started over, so its last reading no longer holds
