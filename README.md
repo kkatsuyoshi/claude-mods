@@ -20,7 +20,7 @@ For Claude Desktop (Code tab) only. It leaves the terminal (CLI) display unchang
 
 A figure not reported is left out. The line refreshes after each turn and the reset countdown every minute.
 
-The limits are the figures from this session's latest response. Usage elsewhere, such as in other sessions, shows up only with this session's next response, so the line can read lower than Claude Desktop's own usage view.
+The limits are the newest figures any Claude Code session on this machine has received: the sessions share them, so usage in another session shows up within about a minute. Usage elsewhere, such as claude.ai chats or another device, shows up only with the next response, so the line can read lower than Claude Desktop's own usage view.
 
 ## Install
 

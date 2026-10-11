@@ -75,6 +75,84 @@ const creepingClock = (on: On, start: number) => {
   }
 }
 
+// The store the sessions on this machine share, holding what another session wrote, and what this one writes to it
+const sharedStore = (on: On, shared?: SessionRateLimit[]) => {
+  const store = { value: shared as unknown, writes: 0 }
+  on('store.get', ($, e) => ({ value: e.key === 'rateLimits' ? store.value : undefined }))
+  on('store.set', ($, e) => {
+    store.value = e.value
+    store.writes++
+    return { value: undefined }
+  })
+
+  return store
+}
+
+const fiveHour = (percentUsed: number, resetsAt = '2026-10-11T12:13:00Z'): SessionRateLimit => ({ kind: 'five_hour', percentUsed, resetsAt })
+const sevenDay = (percentUsed: number, resetsAt = '2026-10-15T00:00:00Z'): SessionRateLimit => ({ kind: 'seven_day', percentUsed, resetsAt })
+
+test('draws the newest reading another session shared', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  sharedStore(on, [fiveHour(50), sevenDay(40)])
+  const session = engine(on, undefined)
+
+  await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
+
+  expect(session.lines).toEqual(['c27 s50/2:13 w40'])
+})
+
+test('keeps its own reading over an older one shared, and shares it', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  const store = sharedStore(on, [fiveHour(80, '2026-10-11T07:13:00Z'), sevenDay(5)])
+  const session = engine(on, undefined)
+
+  await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
+
+  expect(session.lines).toEqual(['c27 s12/2:13 w34'])
+  expect(store.value).toEqual(LIMITS)
+})
+
+test('shares each new reading for the other sessions, a terminal session too', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  const store = sharedStore(on)
+  const session = engine(on, undefined)
+  session.surfaces = ['terminal']
+
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await $.session.measure({ context: CONTEXT, rateLimits: [fiveHour(20), sevenDay(35)], changed: ['rateLimits'] })
+
+  expect(store.value).toEqual([fiveHour(20), sevenDay(35)])
+  expect(session.lines.every(line => line === undefined)).toBe(true)
+})
+
+test('picks up a reading another session shares on the next turn of the countdown', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW })
+  const store = sharedStore(on)
+  const session = engine(on, clock)
+
+  await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
+  store.value = [fiveHour(30), sevenDay(36)]
+  await clock.advance(60_000)
+
+  expect(session.lines).toEqual(['c27 s12/2:13 w34', 'c27 s30/2:12 w36'])
+})
+
+test('draws its own figures when the store cannot be read or written', async ($, on) => {
+  mock.clock(on, { now: NOW })
+  on('store.get', () => {
+    throw new Error('unreadable')
+  })
+  on('store.set', () => {
+    throw new Error('unwritable')
+  })
+  const session = engine(on, undefined)
+
+  await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
+  await $.session.measure({ context: CONTEXT, rateLimits: [fiveHour(20), sevenDay(35)], changed: ['rateLimits'] })
+
+  expect(session.lines).toEqual(['c27 s12/2:13 w34', 'c27 s20/2:13 w35'])
+})
+
 test('pins the figures in the desktop app and counts the reset down each minute', async ($, on) => {
   const clock = mock.clock(on, { now: NOW })
   const session = engine(on, clock)

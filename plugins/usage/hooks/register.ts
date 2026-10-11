@@ -1,6 +1,7 @@
-import type { EngineInterface, Register, SessionUsage, Timer } from 'claude-code'
+import type { EngineInterface, Register, SessionRateLimit, SessionUsage, Timer } from 'claude-code'
 
 import { formatUsage, untilCountdownMoves } from './format'
+import { mergeLimits, parseLimits } from './limits'
 
 type Usage = Pick<SessionUsage, 'context' | 'rateLimits'>
 
@@ -31,9 +32,38 @@ async function redraw($: EngineInterface, current: () => Usage | undefined) {
   return isShown
 }
 
-// The line changes on its own while nothing is measured, as the reset countdown turns over and a window resets: one
-// timer redraws it then and waits for the next change, armed only while the line is shown
-type Countdown = { timer?: Timer; resets?: string; usage: () => Usage | undefined; isShown: () => boolean }
+// The limits are shared with the other sessions on this machine through the store, so each draws the newest reading
+// of each window, whichever session read it
+const SHARED = 'rateLimits'
+
+// The windows as the sessions on this machine last read them; none when the store cannot be read
+async function readShared($: EngineInterface) {
+  return parseLimits(await $.store.get(SHARED).catch(() => undefined))
+}
+
+// Adds this session's reading to the shared one, and answers the newest reading of each window
+async function share($: EngineInterface, own: readonly SessionRateLimit[]) {
+  const stored = await readShared($)
+  const merged = mergeLimits(stored, own)
+  if (JSON.stringify(merged) !== JSON.stringify(stored)) {
+    await $.store
+      .set(SHARED, merged)
+      .catch(error => $.ui.log(`usage: sharing the limits failed: ${String(error)}`, { to: 'debug' }))
+  }
+
+  return merged
+}
+
+// The line changes on its own while nothing is measured, as the reset countdown turns over, a window resets and
+// another session shares a newer reading: one timer redraws it then and waits for the next change, armed only while
+// the line is shown
+type Countdown = {
+  timer?: Timer
+  resets?: string
+  usage: () => Usage | undefined
+  isShown: () => boolean
+  adopt: (shared: readonly SessionRateLimit[]) => void
+}
 
 const resetsOf = (usage: Usage | undefined) =>
   (usage?.rateLimits ?? []).map(limit => `${limit.kind}@${limit.resetsAt ?? ''}`).join(' ')
@@ -74,6 +104,7 @@ async function armCountdown($: EngineInterface, countdown: Countdown, now?: numb
 // One turn of the countdown: a single reading of the clock both draws the line and times the next turn, so the two
 // never disagree about which minute it is; a timer that fires a moment early draws that moment and turns again on time
 async function tickCountdown($: EngineInterface, countdown: Countdown) {
+  countdown.adopt(await readShared($))
   const now = await $.clock.now().catch(() => undefined)
   if (countdown.isShown()) {
     await draw($, countdown.usage(), true, now)
@@ -84,12 +115,22 @@ async function tickCountdown($: EngineInterface, countdown: Countdown) {
 export const register: Register = on => {
   let usage: Usage | undefined
   let isShown = false
-  const countdown: Countdown = { usage: () => usage, isShown: () => isShown }
+  // the newest reading of each window, this session's or another's
+  let limits: SessionRateLimit[] = []
+  const shown = (): Usage | undefined => usage && { context: usage.context, rateLimits: limits }
+  const countdown: Countdown = {
+    usage: shown,
+    isShown: () => isShown,
+    adopt: shared => {
+      limits = mergeLimits(limits, shared)
+    },
+  }
 
   on('session.start', async ($, e, next) => {
     const result = await next(e)
     usage = await $.session.usage().catch(() => usage)
-    isShown = await redraw($, () => usage)
+    limits = await share($, usage?.rateLimits ?? [])
+    isShown = await redraw($, shown)
     await armCountdown($, countdown)
 
     return result
@@ -97,8 +138,13 @@ export const register: Register = on => {
 
   on('session.measure', async ($, e, next) => {
     usage = e
-    await draw($, usage, isShown)
-    // re-armed only when a reset moved, and not in the way of the line or the rest of the chain
+    limits = mergeLimits(limits, e.rateLimits)
+    await draw($, shown(), isShown)
+    // shared with the other sessions, and re-armed only when a reset moved, neither in the way of the line or the rest
+    // of the chain
+    void share($, e.rateLimits).then(merged => {
+      limits = mergeLimits(limits, merged)
+    })
     void armCountdown($, countdown)
 
     return next(e)
@@ -107,7 +153,7 @@ export const register: Register = on => {
   // the desktop app attaches after the session starts, and its leaving clears the line
   on('session.attach', async ($, e, next) => {
     const result = await next(e)
-    isShown = await redraw($, () => usage)
+    isShown = await redraw($, shown)
     await armCountdown($, countdown)
 
     return result
@@ -115,7 +161,7 @@ export const register: Register = on => {
 
   on('session.detach', async ($, e, next) => {
     const result = await next(e)
-    isShown = await redraw($, () => usage)
+    isShown = await redraw($, shown)
     await armCountdown($, countdown)
 
     return result
