@@ -58,15 +58,15 @@ test('pins the figures in the desktop app and counts the reset down each minute'
   expect(session.lines.at(-1)).toBe('c27 s12/0:13 w34')
 })
 
-test('rounds the time until the reset down to the minute', async ($, on) => {
+test('rounds the time until the reset up to the minute, as Claude Desktop does', async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-10-11T10:00:30Z') })
   const session = engine(on, clock)
 
   await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
   await clock.set(Date.parse('2026-10-11T12:12:30Z'))
 
-  expect(session.lines.slice(0, 1)).toEqual(['c27 s12/2:12 w34'])
-  expect(session.lines.at(-1)).toBe('c27 s12/0:00 w34')
+  expect(session.lines.slice(0, 1)).toEqual(['c27 s12/2:13 w34'])
+  expect(session.lines.at(-1)).toBe('c27 s12/0:01 w34')
 })
 
 test('turns the countdown over as the minute left runs out, not a minute from the session start', async ($, on) => {
@@ -74,11 +74,11 @@ test('turns the countdown over as the minute left runs out, not a minute from th
   const session = engine(on, clock)
 
   await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
-  await clock.advance(30_000)
+  await clock.advance(29_999)
   const before = session.lines.at(-1)
   await clock.advance(1)
 
-  expect([before, session.lines.at(-1)]).toEqual(['c27 s12/2:12 w34', 'c27 s12/2:11 w34'])
+  expect([before, session.lines.at(-1)]).toEqual(['c27 s12/2:13 w34', 'c27 s12/2:12 w34'])
 })
 
 test('draws the week as started over the moment its reset passes, not on the next turn of the countdown', async ($, on) => {
@@ -87,9 +87,9 @@ test('draws the week as started over the moment its reset passes, not on the nex
   const session = engine(on, clock, { context: CONTEXT, rateLimits: weekSoon })
 
   await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
-  await clock.advance(20_001)
+  await clock.advance(20_000)
 
-  expect(session.lines).toEqual(['c27 s12/2:13 w34', 'c27 s12/2:12 w34', 'c27 s12/2:12 w0'])
+  expect(session.lines).toEqual(['c27 s12/2:13 w34', 'c27 s12/2:13 w0'])
 })
 
 test('keeps no countdown while the line is hidden', async ($, on) => {
@@ -148,7 +148,7 @@ test('counts a window whose reset has passed as started over', async ($, on) => 
   const session = engine(on, clock)
 
   await $.session.start({ cwd: '/tmp', surface: null, isInteractive: false })
-  await clock.set(Date.parse('2026-10-11T12:13:00Z') + 1)
+  await clock.set(Date.parse('2026-10-11T12:13:00Z'))
 
   expect(session.lines.at(-1)).toBe('c27 s0 w34')
 })
@@ -214,5 +214,5 @@ test('never pins older figures over newer ones when draws overlap', async ($, on
   await clock.advance(1_000)
   await attaching
 
-  expect(session.lines.at(-1)).toBe('c40 s12/2:12 w34')
+  expect(session.lines.at(-1)).toBe('c40 s12/2:13 w34')
 })

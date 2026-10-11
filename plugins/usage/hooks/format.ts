@@ -1,10 +1,10 @@
 import type { SessionContextUsage, SessionRateLimit } from 'claude-code'
 
-// `4:25`, `0:47`: hours and minutes left until `resetsAt`, rounded down to the minute as Claude Desktop shows them;
+// `4:25`, `0:47`: hours and minutes left until `resetsAt`, rounded up to the minute as Claude Desktop shows them;
 // none once it has passed
 const timeLeft = (resetsAt: string | undefined, now: number) => {
   const left = Date.parse(resetsAt ?? '') - now
-  const minutes = Math.floor(left / 60_000)
+  const minutes = Math.ceil(left / 60_000)
 
   return left > 0 ? `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, '0')}` : undefined
 }
@@ -19,14 +19,14 @@ const percent = (label: string, value: number | undefined) =>
 
 const limitOf = (rateLimits: readonly SessionRateLimit[], kind: string) => rateLimits.find(each => each.kind === kind)
 
-// Milliseconds until the line next changes on its own: just past the moment the session's time left drops below a whole
-// minute, so the countdown turns over with Claude Desktop's, or just past the week's reset, whichever comes first;
-// a minute when no reset is ahead
+// Milliseconds until the line next changes on its own: the moment the session's time left reaches a whole minute, so
+// the countdown turns over with Claude Desktop's, or the moment the week resets, whichever comes first; a minute when
+// no reset is ahead
 export const untilCountdownMoves = (rateLimits: readonly SessionRateLimit[], now: number) => {
   const left = (kind: string) => Date.parse(limitOf(rateLimits, kind)?.resetsAt ?? '') - now
   const session = left('five_hour')
   const week = left('seven_day')
-  const waits = [session > 0 ? (session % 60_000) + 1 : undefined, week > 0 ? week + 1 : undefined].filter(
+  const waits = [session > 0 ? session % 60_000 || 60_000 : undefined, week > 0 ? week : undefined].filter(
     (wait): wait is number => wait !== undefined,
   )
 
