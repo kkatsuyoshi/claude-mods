@@ -16,11 +16,19 @@ usage c21 s77/3:39 w8
 | `s77/3:39` | Current session (5-hour) limit used, %, and time until it resets (h:mm) |
 | `w8` | Weekly (7-day) limit used, % |
 
-For Claude Desktop (Code tab) only. It leaves the terminal (CLI) display unchanged. While the same session is open in both Claude Desktop and a terminal, it shows the line in neither.
+## Notes
 
-A figure not reported is left out. The line refreshes after each turn and the reset countdown every minute.
-
-The limits are the figures from this session's latest response. Usage elsewhere, such as in other sessions, shows up only with this session's next response, so the line can read lower than Claude Desktop's own usage view.
+- **Where:** Claude Desktop (Code tab) only.
+  - It leaves the terminal (CLI) display unchanged.
+  - While the same session is open in both Claude Desktop and a terminal, it shows the line in neither.
+- **When it refreshes:** each time Claude finishes responding. The reset countdown refreshes every minute.
+- **What it leaves out:** a figure not reported.
+  - In a new session, the limits (`s` and `w`) show from its first response.
+  - Off a subscription (such as with an API key), the limits are not shown.
+- **The limits:** Claude Code sessions using the same configuration directory (`~/.claude` unless `CLAUDE_CONFIG_DIR` is set) share them, and the line shows the newest figures for this session's windows.
+  - Usage in another session shows up within about a minute.
+  - Usage elsewhere, such as claude.ai chats or another device, shows up only with the next response, so the line can read lower than Claude Desktop's own usage view.
+  - If several accounts take turns in one configuration directory, another account's figures can show after this session's window resets, until its next response.
 
 ## Install
 
