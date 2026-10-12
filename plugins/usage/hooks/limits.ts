@@ -33,15 +33,18 @@ export const mergeLimits = (...lists: (readonly SessionRateLimit[])[]) => {
 // The readings other sessions shared that belong to this session's account: the store is shared by every session
 // under the configuration directory, whatever account each is on, so a shared reading counts only for a window this
 // session has read itself, once that window has passed for the window after it. A session with no reading of a kind,
-// as off a subscription, draws none shared
+// as off a subscription, draws none shared. A reading of the session's own window counts down to the session's own
+// reset, so the line turns over with Claude Desktop's whichever session read it
 export const adoptLimits = (own: readonly SessionRateLimit[], shared: readonly SessionRateLimit[], now: number) =>
-  shared.filter(limit => {
+  shared.flatMap(limit => {
     const mine = own.find(each => each.kind === limit.kind)
-    return (
-      mine !== undefined &&
-      !Number.isNaN(resetOf(mine)) &&
-      (isSameWindow(mine, limit) || (resetOf(mine) <= now && resetOf(limit) > resetOf(mine)))
-    )
+    if (mine === undefined || Number.isNaN(resetOf(mine))) {
+      return []
+    }
+    if (isSameWindow(mine, limit)) {
+      return [{ ...limit, resetsAt: mine.resetsAt }]
+    }
+    return resetOf(mine) <= now && resetOf(limit) > resetOf(mine) ? [limit] : []
   })
 
 // What one session shared: its key in the store, when it last wrote it, and its reading
