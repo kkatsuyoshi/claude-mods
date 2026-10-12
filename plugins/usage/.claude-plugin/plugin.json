@@ -1,6 +1,6 @@
 {
   "name": "usage",
-  "version": "0.2.0",
+  "version": "0.1.4",
   "description": "Pins context window, current session and weekly usage as a status line under the prompt in Claude Desktop",
   "author": { "name": "KANEMOTO Katsuyoshi", "url": "https://github.com/kkatsuyoshi" },
   "homepage": "https://github.com/kkatsuyoshi/claude-mods",
